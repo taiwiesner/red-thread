@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Parisienne } from "next/font/google";
 
@@ -18,19 +18,6 @@ export default function Home() {
 
   const correctPassword = "incandescent";
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
-        e.preventDefault();
-        setShowUnlock(true);
-        setError("");
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -43,17 +30,25 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center bg-[#4E0707] px-6 text-[#F8EDEB]">
-      <h1 className={`${fancy.className} text-8xl leading-none select-none`}>
-        Red Thread
-      </h1>
-
+    <main
+      className="min-h-screen flex flex-col items-center justify-center px-6 text-[#F8EDEB]"
+      style={{
+        background:
+          "linear-gradient(180deg, #2A0202 0%, #4E0707 40%, #1A0000 100%)",
+      }}
+    >
       {!showUnlock ? (
-        <p className="mt-10 text-sm tracking-[0.25em] uppercase opacity-70 select-none">
-          Press space
-        </p>
+        <button
+          onClick={() => setShowUnlock(true)}
+          className={`${fancy.className} text-8xl leading-none transition duration-500 hover:scale-105`}
+        >
+          Red Thread
+        </button>
       ) : (
-        <form onSubmit={submit} className="mt-10 flex flex-col items-center gap-4">
+        <form
+          onSubmit={submit}
+          className="flex flex-col items-center gap-4"
+        >
           <p className="text-sm tracking-[0.25em] uppercase opacity-80">
             Enter password
           </p>
