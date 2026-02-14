@@ -39,7 +39,6 @@ type EventRow = {
   id: string;
   title: string;
   event_date: string; // "YYYY-MM-DD"
-  details: string | null;
   created_at: string;
 };
 
@@ -59,6 +58,13 @@ function formatDateLong(d: Date) {
   });
 }
 
+function yyyyMmDd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function buildMonthGrid(date: Date) {
   const year = date.getFullYear();
   const month = date.getMonth();
@@ -67,7 +73,12 @@ function buildMonthGrid(date: Date) {
   const startDay = (first.getDay() + 6) % 7; // Monday=0
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
-  const cells: Array<{ day: number | null; isToday?: boolean }> = [];
+  const cells: Array<{
+    day: number | null;
+    iso?: string;
+    isToday?: boolean;
+  }> = [];
+
   for (let i = 0; i < startDay; i++) cells.push({ day: null });
 
   const today = new Date();
@@ -76,18 +87,12 @@ function buildMonthGrid(date: Date) {
   const tD = today.getDate();
 
   for (let d = 1; d <= daysInMonth; d++) {
-    cells.push({ day: d, isToday: year === tY && month === tM && d === tD });
+    const iso = yyyyMmDd(new Date(year, month, d));
+    cells.push({ day: d, iso, isToday: year === tY && month === tM && d === tD });
   }
 
   while (cells.length % 7 !== 0) cells.push({ day: null });
   return cells;
-}
-
-function yyyyMmDd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 
 export default function Inside() {
@@ -119,8 +124,7 @@ export default function Inside() {
   const [monthCursor, setMonthCursor] = useState(() => new Date());
   const [events, setEvents] = useState<EventRow[]>([]);
   const [eventTitle, setEventTitle] = useState("");
-  const [eventDate, setEventDate] = useState(yyyyMmDd(new Date()));
-  const [eventDetails, setEventDetails] = useState("");
+  const [selectedDate, setSelectedDate] = useState(() => yyyyMmDd(new Date()));
 
   const [msg, setMsg] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -129,10 +133,7 @@ export default function Inside() {
   const spotifyUrl =
     "https://open.spotify.com/playlist/3ytkKbz8DTVpWtod4RxzAF?si=aed292895d3842f0";
 
-  const previewUrl = useMemo(
-    () => (file ? URL.createObjectURL(file) : null),
-    [file]
-  );
+  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
 
   useEffect(() => {
     return () => {
@@ -158,14 +159,6 @@ export default function Inside() {
     month: "long",
     year: "numeric",
   });
-
-  // Helpers
-  function getStoragePathFromPublicUrl(url: string) {
-    const marker = "/storage/v1/object/public/photos/";
-    const idx = url.indexOf(marker);
-    if (idx === -1) return null;
-    return url.slice(idx + marker.length);
-  }
 
   // Loads
   async function loadPosts() {
@@ -199,10 +192,7 @@ export default function Inside() {
   }
 
   async function loadPinned() {
-    const { data, error } = await supabase
-      .from("pinned_notes")
-      .select("id, body");
-
+    const { data, error } = await supabase.from("pinned_notes").select("id, body");
     if (error) return;
 
     const rows = (data as PinnedRow[]) ?? [];
@@ -213,7 +203,7 @@ export default function Inside() {
     setTaiNote(t?.body ?? "");
   }
 
-  // ✅ next 5 upcoming events (any month)
+  // ✅ next 5 upcoming events (rule stays the same)
   async function loadNextEvents() {
     const todayStr = yyyyMmDd(new Date());
     const { data, error } = await supabase
@@ -247,10 +237,7 @@ export default function Inside() {
       const ext = file.name.split(".").pop() || "jpg";
       const path = `uploads/${crypto.randomUUID()}.${ext}`;
 
-      const { error: upErr } = await supabase.storage
-        .from("photos")
-        .upload(path, file);
-
+      const { error: upErr } = await supabase.storage.from("photos").upload(path, file);
       if (upErr) return setMsg(upErr.message);
 
       const { data } = supabase.storage.from("photos").getPublicUrl(path);
@@ -270,6 +257,13 @@ export default function Inside() {
     setFile(null);
     setMsg("Saved.");
     await loadPosts();
+  }
+
+  function getStoragePathFromPublicUrl(url: string) {
+    const marker = "/storage/v1/object/public/photos/";
+    const idx = url.indexOf(marker);
+    if (idx === -1) return null;
+    return url.slice(idx + marker.length);
   }
 
   async function deletePost(p: Post) {
@@ -335,10 +329,7 @@ export default function Inside() {
     setMsg("");
     if (!todoText.trim()) return;
 
-    const { error } = await supabase
-      .from("todos")
-      .insert({ text: todoText.trim() });
-
+    const { error } = await supabase.from("todos").insert({ text: todoText.trim() });
     if (error) return setMsg(error.message);
 
     setTodoText("");
@@ -347,11 +338,7 @@ export default function Inside() {
 
   async function toggleTodo(t: Todo) {
     setMsg("");
-    const { error } = await supabase
-      .from("todos")
-      .update({ done: !t.done })
-      .eq("id", t.id);
-
+    const { error } = await supabase.from("todos").update({ done: !t.done }).eq("id", t.id);
     if (error) return setMsg(error.message);
     await loadTodos();
   }
@@ -397,14 +384,12 @@ export default function Inside() {
 
     const { error } = await supabase.from("events").insert({
       title: eventTitle.trim(),
-      event_date: eventDate,
-      details: eventDetails.trim() ? eventDetails.trim() : null,
+      event_date: selectedDate,
     });
 
     if (error) return setMsg(error.message);
 
     setEventTitle("");
-    setEventDetails("");
     setMsg("Event saved.");
     await loadNextEvents();
   }
@@ -439,18 +424,11 @@ export default function Inside() {
         new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime(),
     });
 
-    const addDays = (n: number) =>
-      new Date(base.getFullYear(), base.getMonth(), base.getDate() + n);
-    const addMonths = (n: number) =>
-      new Date(base.getFullYear(), base.getMonth() + n, base.getDate());
-    const addYears = (n: number) =>
-      new Date(base.getFullYear() + n, base.getMonth(), base.getDate());
+    const addDays = (n: number) => new Date(base.getFullYear(), base.getMonth(), base.getDate() + n);
+    const addMonths = (n: number) => new Date(base.getFullYear(), base.getMonth() + n, base.getDate());
+    const addYears = (n: number) => new Date(base.getFullYear() + n, base.getMonth(), base.getDate());
 
-    return [
-      mk("100 days", addDays(100)),
-      mk("6 months", addMonths(6)),
-      mk("1 year", addYears(1)),
-    ];
+    return [mk("100 days", addDays(100)), mk("6 months", addMonths(6)), mk("1 year", addYears(1))];
   }, [togetherDate, today]);
 
   return (
@@ -474,13 +452,10 @@ export default function Inside() {
           {/* Header */}
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className={`${fancy.className} text-5xl leading-none`}>
-                Red Thread
-              </h1>
+              <h1 className={`${fancy.className} text-5xl leading-none`}>Red Thread</h1>
               <p className="mt-3 max-w-2xl opacity-85 leading-relaxed text-sm">
-                We tried apps for couples and we always stopped using them. So I
-                decided to make this for us - a space we can build together. And
-                also because you love keeping things organized.
+                We tried apps for couples and we always stopped using them. So I decided to make this for us - a space we
+                can build together. And also because you love keeping things organized.
               </p>
             </div>
 
@@ -497,16 +472,12 @@ export default function Inside() {
             {/* LEFT: calendar + events */}
             <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-4">
               <div className="flex items-center justify-between">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Calendar
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Calendar</div>
 
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() =>
-                      setMonthCursor(
-                        new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1)
-                      )
+                      setMonthCursor(new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1))
                     }
                     className="rounded-sm border border-[#F8EDEB]/30 px-2 py-1 text-[10px] uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
                   >
@@ -514,9 +485,7 @@ export default function Inside() {
                   </button>
                   <button
                     onClick={() =>
-                      setMonthCursor(
-                        new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1)
-                      )
+                      setMonthCursor(new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1))
                     }
                     className="rounded-sm border border-[#F8EDEB]/30 px-2 py-1 text-[10px] uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
                   >
@@ -535,23 +504,38 @@ export default function Inside() {
                   </div>
                 ))}
 
-                {monthCells.map((c, i) => (
-                  <div
-                    key={i}
-                    className={`rounded-md py-1 border border-[#F8EDEB]/10 ${
-                      c.isToday ? "bg-[#F8EDEB] text-[#4E0707] border-[#F8EDEB]" : "bg-black/10"
-                    }`}
-                  >
-                    {c.day ?? ""}
-                  </div>
-                ))}
+                {monthCells.map((c, i) => {
+                  const isSelected = c.iso && c.iso === selectedDate;
+
+                  if (!c.day) {
+                    return (
+                      <div key={i} className="rounded-md py-1 border border-[#F8EDEB]/10 bg-black/10" />
+                    );
+                  }
+
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => c.iso && setSelectedDate(c.iso)}
+                      className={`rounded-md py-1 border border-[#F8EDEB]/10 transition ${
+                        c.isToday
+                          ? "bg-[#F8EDEB] text-[#4E0707] border-[#F8EDEB]"
+                          : isSelected
+                          ? "bg-[#F8EDEB]/25 border-[#F8EDEB]/45"
+                          : "bg-black/10 hover:bg-[#F8EDEB]/10"
+                      }`}
+                      title={c.iso}
+                    >
+                      {c.day}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Events */}
               <div className="mt-4 border-t border-[#F8EDEB]/12 pt-3">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Next 5 events
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Next events</div>
 
                 <div className="mt-3 grid gap-2">
                   {events.map((ev) => (
@@ -564,7 +548,6 @@ export default function Inside() {
                           <div className="text-sm">{ev.title}</div>
                           <div className="text-[11px] opacity-70">
                             {new Date(ev.event_date).toLocaleDateString()}
-                            {ev.details ? ` • ${ev.details}` : ""}
                           </div>
                         </div>
 
@@ -579,62 +562,46 @@ export default function Inside() {
                     </div>
                   ))}
 
-                  {events.length === 0 && (
-                    <div className="text-sm opacity-75">No upcoming events yet.</div>
-                  )}
+                  {events.length === 0 && <div className="text-sm opacity-75">No upcoming events yet.</div>}
                 </div>
 
-                {/* Add event */}
+                {/* Add event (date is selected from calendar) */}
                 <form onSubmit={addEvent} className="mt-3 grid gap-2">
+                  <div className="text-[11px] opacity-70">
+                    Adding to:{" "}
+                    <span className="opacity-90">{new Date(selectedDate).toLocaleDateString()}</span>
+                  </div>
+
                   <input
                     value={eventTitle}
                     onChange={(e) => setEventTitle(e.target.value)}
                     placeholder="Event title"
                     className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
                   />
-                  <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="date"
-                      value={eventDate}
-                      onChange={(e) => setEventDate(e.target.value)}
-                      className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none focus:border-[#F8EDEB]/45"
-                    />
-                    <button
-                      type="submit"
-                      className="rounded-sm border border-[#F8EDEB]/35 px-4 py-2 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
-                    >
-                      Add
-                    </button>
-                  </div>
-                  <input
-                    value={eventDetails}
-                    onChange={(e) => setEventDetails(e.target.value)}
-                    placeholder="Details (optional)"
-                    className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
-                  />
+
+                  <button
+                    type="submit"
+                    className="rounded-sm border border-[#F8EDEB]/35 px-4 py-2 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
+                  >
+                    Add
+                  </button>
                 </form>
               </div>
             </section>
 
             {/* RIGHT: countdown + pinned + spotify below */}
             <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-4">
-              <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                Dashboard
-              </div>
+              <div className="text-xs uppercase tracking-[0.25em] opacity-75">Dashboard</div>
 
               <div className="mt-3 grid gap-3">
                 <div className="rounded-md border border-[#F8EDEB]/15 bg-black/10 px-3 py-3">
-                  <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                    Days since we met
-                  </div>
+                  <div className="text-xs uppercase tracking-[0.25em] opacity-75">Days since we met</div>
                   <div className="mt-1 text-3xl font-semibold">{daysSinceMet}</div>
                   <div className="text-xs opacity-70">Since Oct 5, 2025</div>
                 </div>
 
                 <div className="rounded-md border border-[#F8EDEB]/15 bg-black/10 px-3 py-3">
-                  <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                    Days together
-                  </div>
+                  <div className="text-xs uppercase tracking-[0.25em] opacity-75">Days together</div>
                   <div className="mt-1 text-3xl font-semibold">{daysTogether}</div>
                   <div className="text-xs opacity-70">Since Nov 20, 2025</div>
                 </div>
@@ -642,9 +609,7 @@ export default function Inside() {
 
               {/* Pinned notes */}
               <div className="mt-4 border-t border-[#F8EDEB]/12 pt-3">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Pinned Notes
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Pinned Notes</div>
 
                 <form onSubmit={savePinned} className="mt-3 grid gap-3">
                   <div>
@@ -722,9 +687,7 @@ export default function Inside() {
           {tab === "memories" && (
             <div className="mt-6 grid gap-6">
               <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Add a memory
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Add a memory</div>
 
                 <form onSubmit={addPost} className="mt-4 grid gap-3">
                   <input
@@ -753,9 +716,7 @@ export default function Inside() {
                         onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                         className="hidden"
                       />
-                      <span className="text-xs opacity-70">
-                        {file ? file.name : "optional"}
-                      </span>
+                      <span className="text-xs opacity-70">{file ? file.name : "optional"}</span>
                     </label>
 
                     <button
@@ -769,11 +730,7 @@ export default function Inside() {
                   {previewUrl && (
                     <div className="mt-2 overflow-hidden rounded-lg border border-[#F8EDEB]/20">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={previewUrl}
-                        alt=""
-                        className="w-full max-h-[420px] object-cover"
-                      />
+                      <img src={previewUrl} alt="" className="w-full max-h-[420px] object-cover" />
                     </div>
                   )}
                 </form>
@@ -803,21 +760,13 @@ export default function Inside() {
                         </button>
                       </div>
 
-                      {p.body && (
-                        <p className="mt-4 whitespace-pre-wrap leading-relaxed">
-                          {p.body}
-                        </p>
-                      )}
+                      {p.body && <p className="mt-4 whitespace-pre-wrap leading-relaxed">{p.body}</p>}
                     </div>
 
                     {p.image_url && (
                       <div className="border-t border-[#F8EDEB]/15">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={p.image_url}
-                          alt=""
-                          className="w-full max-h-[520px] object-cover"
-                        />
+                        <img src={p.image_url} alt="" className="w-full max-h-[520px] object-cover" />
                       </div>
                     )}
                   </article>
@@ -836,9 +785,7 @@ export default function Inside() {
           {tab === "notes" && (
             <div className="mt-6 grid gap-6">
               <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Add a love note
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Add a love note</div>
 
                 <form onSubmit={addLoveNote} className="mt-4 grid gap-3">
                   <input
@@ -888,11 +835,7 @@ export default function Inside() {
                       </button>
                     </div>
 
-                    {n.body && (
-                      <p className="mt-4 whitespace-pre-wrap leading-relaxed">
-                        {n.body}
-                      </p>
-                    )}
+                    {n.body && <p className="mt-4 whitespace-pre-wrap leading-relaxed">{n.body}</p>}
                   </article>
                 ))}
 
@@ -909,9 +852,7 @@ export default function Inside() {
           {tab === "list" && (
             <div className="mt-6 grid gap-6">
               <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Add an item
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Add an item</div>
 
                 <form onSubmit={addTodo} className="mt-4 flex gap-3">
                   <input
@@ -931,9 +872,7 @@ export default function Inside() {
               </section>
 
               <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Checklist
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Checklist</div>
 
                 <div className="mt-4 grid gap-3">
                   {todos.map((t) => (
@@ -948,9 +887,7 @@ export default function Inside() {
                           onChange={() => toggleTodo(t)}
                           className="h-4 w-4"
                         />
-                        <span className={t.done ? "line-through opacity-60" : ""}>
-                          {t.text}
-                        </span>
+                        <span className={t.done ? "line-through opacity-60" : ""}>{t.text}</span>
                       </label>
 
                       <button
@@ -963,9 +900,7 @@ export default function Inside() {
                     </div>
                   ))}
 
-                  {todos.length === 0 && (
-                    <div className="opacity-80">No items yet.</div>
-                  )}
+                  {todos.length === 0 && <div className="opacity-80">No items yet.</div>}
                 </div>
               </section>
             </div>
@@ -975,9 +910,7 @@ export default function Inside() {
           {tab === "milestones" && (
             <div className="mt-6 grid gap-6">
               <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5">
-                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                  Milestones
-                </div>
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">Milestones</div>
 
                 <div className="mt-4 grid gap-3">
                   {milestones.map((m) => (
