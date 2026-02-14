@@ -35,6 +35,14 @@ type PinnedRow = {
   body: string | null;
 };
 
+type CalEvent = {
+  id: string;
+  day: string; // "YYYY-MM-DD"
+  title: string;
+  note: string | null;
+  created_at: string;
+};
+
 function daysBetween(a: Date, b: Date) {
   const oneDay = 24 * 60 * 60 * 1000;
   const A = new Date(a.getFullYear(), a.getMonth(), a.getDate());
@@ -49,6 +57,13 @@ function formatDateLong(d: Date) {
     month: "long",
     day: "numeric",
   });
+}
+
+function toYMD(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function buildMonthGrid(date: Date) {
@@ -80,7 +95,10 @@ export default function Inside() {
     "memories"
   );
 
-  // Memories (posts + photos)
+  // Freeze "today" for this render session (prevents weird re-renders)
+  const [today] = useState(() => new Date());
+
+  // Memories
   const [posts, setPosts] = useState<Post[]>([]);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -100,10 +118,15 @@ export default function Inside() {
   const [taiNote, setTaiNote] = useState("");
   const [pinSaved, setPinSaved] = useState("");
 
+  // Calendar events
+  const [selectedDay, setSelectedDay] = useState<Date>(() => new Date());
+  const [events, setEvents] = useState<CalEvent[]>([]);
+  const [eventTitle, setEventTitle] = useState("");
+  const [eventNote, setEventNote] = useState("");
+
   const [msg, setMsg] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // ✅ Put your real Spotify playlist link here
   const spotifyUrl =
     "https://open.spotify.com/playlist/3ytkKbz8DTVpWtod4RxzAF?si=aed292895d3842f0";
 
@@ -122,7 +145,6 @@ export default function Inside() {
   const metDate = useMemo(() => new Date(2025, 9, 5), []); // Oct 5, 2025
   const togetherDate = useMemo(() => new Date(2025, 10, 20), []); // Nov 20, 2025
 
-  const today = new Date();
   const daysSinceMet = daysBetween(metDate, today);
   const daysTogether = daysBetween(togetherDate, today);
 
@@ -188,11 +210,31 @@ export default function Inside() {
     setTaiNote(t?.body ?? "");
   }
 
+  async function loadEventsForMonth(anchor: Date) {
+    setMsg("");
+
+    const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1);
+
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .gte("day", toYMD(start))
+      .lt("day", toYMD(end))
+      .order("day", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) return setMsg(error.message);
+    setEvents((data as CalEvent[]) ?? []);
+  }
+
   useEffect(() => {
     loadPosts();
     loadNotes();
     loadTodos();
     loadPinned();
+    loadEventsForMonth(today);
+    setSelectedDay(today);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -348,7 +390,40 @@ export default function Inside() {
     setTimeout(() => setPinSaved(""), 1500);
   }
 
-  // Milestones based on togetherDate
+  async function addEvent(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg("");
+
+    if (!eventTitle.trim()) return;
+
+    const { error } = await supabase.from("events").insert({
+      day: toYMD(selectedDay),
+      title: eventTitle.trim(),
+      note: eventNote.trim() || null,
+    });
+
+    if (error) return setMsg(error.message);
+
+    setEventTitle("");
+    setEventNote("");
+    await loadEventsForMonth(today);
+  }
+
+  async function deleteEvent(ev: CalEvent) {
+    const ok = confirm("Delete this event?");
+    if (!ok) return;
+
+    setMsg("");
+    setBusyId(ev.id);
+
+    const { error } = await supabase.from("events").delete().eq("id", ev.id);
+    setBusyId(null);
+
+    if (error) return setMsg(error.message);
+
+    await loadEventsForMonth(today);
+  }
+
   const milestones = useMemo(() => {
     const base = togetherDate;
     const mk = (label: string, d: Date) => ({
@@ -374,26 +449,26 @@ export default function Inside() {
     ];
   }, [togetherDate, today]);
 
+  const selectedEvents = useMemo(() => {
+    const day = toYMD(selectedDay);
+    return events.filter((ev) => ev.day === day);
+  }, [events, selectedDay]);
+
   return (
     <main className={`${bodyFont.className} min-h-screen text-[#F8EDEB]`}>
-      {/* Background */}
-<div className="fixed inset-0 bg-[#4E0707]" />
-
-<div
-  className="fixed inset-0"
-  style={{
-    backgroundImage: "url(/cheetah-red.png)",
-    backgroundRepeat: "no-repeat",
-    backgroundPosition: "center",
-    backgroundSize: "cover",
-    opacity: 0.35,
-  }}
-/>
-
-{/* Dark overlay (makes print darker + readable) */}
-<div className="fixed inset-0 bg-black/40" />
-
-
+      {/* Background (UNCHANGED) */}
+      <div className="fixed inset-0 bg-[#4E0707]" />
+      <div
+        className="fixed inset-0"
+        style={{
+          backgroundImage: "url(/cheetah-red.png)",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "cover",
+          opacity: 0.35,
+        }}
+      />
+      <div className="fixed inset-0 bg-black/40" />
 
       <div className="relative px-6 py-10">
         <div className="mx-auto max-w-4xl">
@@ -420,7 +495,7 @@ export default function Inside() {
 
           {/* Dashboard row */}
           <div className="mt-10 grid gap-6 md:grid-cols-2">
-            {/* LEFT: calendar + counters */}
+            {/* LEFT: calendar + counters + events */}
             <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5">
               <div className="text-xs uppercase tracking-[0.25em] opacity-75">
                 Today
@@ -437,18 +512,50 @@ export default function Inside() {
                   </div>
                 ))}
 
-                {monthCells.map((c, i) => (
-                  <div
-                    key={i}
-                    className={`rounded-md py-1.5 border border-[#F8EDEB]/10 ${
-                      c.isToday
-                        ? "bg-[#F8EDEB] text-[#4E0707] border-[#F8EDEB]"
-                        : "bg-black/10"
-                    }`}
-                  >
-                    {c.day ?? ""}
-                  </div>
-                ))}
+                {monthCells.map((c, i) => {
+                  const cellDate =
+                    c.day == null
+                      ? null
+                      : new Date(today.getFullYear(), today.getMonth(), c.day);
+
+                  const ymd = cellDate ? toYMD(cellDate) : null;
+                  const hasEvents = ymd
+                    ? events.some((ev) => ev.day === ymd)
+                    : false;
+
+                  const isSelected =
+                    cellDate &&
+                    cellDate.getFullYear() === selectedDay.getFullYear() &&
+                    cellDate.getMonth() === selectedDay.getMonth() &&
+                    cellDate.getDate() === selectedDay.getDate();
+
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      disabled={!cellDate}
+                      onClick={() => cellDate && setSelectedDay(cellDate)}
+                      className={`relative rounded-md py-1.5 border border-[#F8EDEB]/10 text-xs
+                        ${
+                          c.isToday
+                            ? "bg-[#F8EDEB] text-[#4E0707] border-[#F8EDEB]"
+                            : "bg-black/10"
+                        }
+                        ${isSelected ? "ring-2 ring-[#F8EDEB]/60" : ""}
+                        ${
+                          !cellDate
+                            ? "opacity-40 cursor-default"
+                            : "hover:border-[#F8EDEB]/40"
+                        }
+                      `}
+                    >
+                      {c.day ?? ""}
+                      {hasEvents && (
+                        <span className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-[#F8EDEB]/80" />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
               <div className="mt-2 text-[10px] uppercase tracking-[0.25em] opacity-65">
@@ -460,7 +567,9 @@ export default function Inside() {
                   <div className="text-xs uppercase tracking-[0.25em] opacity-75">
                     Days since we met
                   </div>
-                  <div className="mt-1 text-3xl font-semibold">{daysSinceMet}</div>
+                  <div className="mt-1 text-3xl font-semibold">
+                    {daysSinceMet}
+                  </div>
                   <div className="text-xs opacity-70">Since Oct 5, 2025</div>
                 </div>
 
@@ -468,8 +577,70 @@ export default function Inside() {
                   <div className="text-xs uppercase tracking-[0.25em] opacity-75">
                     Days together
                   </div>
-                  <div className="mt-1 text-3xl font-semibold">{daysTogether}</div>
+                  <div className="mt-1 text-3xl font-semibold">
+                    {daysTogether}
+                  </div>
                   <div className="text-xs opacity-70">Since Nov 20, 2025</div>
+                </div>
+              </div>
+
+              {/* Events */}
+              <div className="mt-6 border-t border-[#F8EDEB]/12 pt-4">
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
+                  Events
+                </div>
+                <div className="mt-2 text-sm opacity-80">
+                  {selectedDay.toLocaleDateString()}
+                </div>
+
+                <form onSubmit={addEvent} className="mt-3 grid gap-2">
+                  <input
+                    value={eventTitle}
+                    onChange={(e) => setEventTitle(e.target.value)}
+                    placeholder="Event title…"
+                    className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 outline-none placeholder:opacity-60"
+                  />
+                  <input
+                    value={eventNote}
+                    onChange={(e) => setEventNote(e.target.value)}
+                    placeholder="Note (optional)…"
+                    className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 outline-none placeholder:opacity-60"
+                  />
+                  <button
+                    type="submit"
+                    className="justify-self-start rounded-sm border border-[#F8EDEB]/35 px-4 py-2 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
+                  >
+                    Add
+                  </button>
+                </form>
+
+                <div className="mt-4 grid gap-2">
+                  {selectedEvents.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className="flex items-center justify-between gap-3 rounded-md border border-[#F8EDEB]/15 bg-black/10 px-3 py-2"
+                    >
+                      <div>
+                        <div className="text-sm">{ev.title}</div>
+                        {ev.note && (
+                          <div className="text-xs opacity-70">{ev.note}</div>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => deleteEvent(ev)}
+                        disabled={busyId === ev.id}
+                        className="rounded-sm border border-[#F8EDEB]/30 px-3 py-1 text-[10px] uppercase tracking-[0.22em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition disabled:opacity-40"
+                      >
+                        {busyId === ev.id ? "…" : "Delete"}
+                      </button>
+                    </div>
+                  ))}
+
+                  {selectedEvents.length === 0 && (
+                    <div className="text-sm opacity-70">No events for this day.</div>
+                  )}
                 </div>
               </div>
             </section>
@@ -524,7 +695,9 @@ export default function Inside() {
                     Save Notes
                   </button>
 
-                  {pinSaved && <span className="text-sm opacity-80">{pinSaved}</span>}
+                  {pinSaved && (
+                    <span className="text-sm opacity-80">{pinSaved}</span>
+                  )}
                 </div>
               </form>
             </section>
@@ -627,7 +800,9 @@ export default function Inside() {
                           <div className="text-xs uppercase tracking-[0.25em] opacity-65">
                             {new Date(p.created_at).toLocaleString()}
                           </div>
-                          <div className="mt-2 text-2xl">{p.title ?? "Untitled"}</div>
+                          <div className="mt-2 text-2xl">
+                            {p.title ?? "Untitled"}
+                          </div>
                         </div>
 
                         <button
@@ -712,7 +887,9 @@ export default function Inside() {
                         <div className="text-xs uppercase tracking-[0.25em] opacity-65">
                           {new Date(n.created_at).toLocaleString()}
                         </div>
-                        <div className="mt-2 text-2xl">{n.title ?? "Love Note"}</div>
+                        <div className="mt-2 text-2xl">
+                          {n.title ?? "Love Note"}
+                        </div>
                       </div>
 
                       <button
@@ -799,7 +976,9 @@ export default function Inside() {
                     </div>
                   ))}
 
-                  {todos.length === 0 && <div className="opacity-80">No items yet.</div>}
+                  {todos.length === 0 && (
+                    <div className="opacity-80">No items yet.</div>
+                  )}
                 </div>
               </section>
             </div>
