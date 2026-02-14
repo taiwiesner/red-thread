@@ -35,20 +35,13 @@ type PinnedRow = {
   body: string | null;
 };
 
-type CalEvent = {
+type EventRow = {
   id: string;
   title: string;
   event_date: string; // "YYYY-MM-DD"
+  details: string | null;
   created_at: string;
 };
-
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
-}
-
-function toISODate(d: Date) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
 
 function daysBetween(a: Date, b: Date) {
   const oneDay = 24 * 60 * 60 * 1000;
@@ -74,13 +67,13 @@ function buildMonthGrid(date: Date) {
   const startDay = (first.getDay() + 6) % 7; // Monday=0
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
+  const cells: Array<{ day: number | null; isToday?: boolean }> = [];
+  for (let i = 0; i < startDay; i++) cells.push({ day: null });
+
   const today = new Date();
   const tY = today.getFullYear();
   const tM = today.getMonth();
   const tD = today.getDate();
-
-  const cells: Array<{ day: number | null; isToday?: boolean }> = [];
-  for (let i = 0; i < startDay; i++) cells.push({ day: null });
 
   for (let d = 1; d <= daysInMonth; d++) {
     cells.push({ day: d, isToday: year === tY && month === tM && d === tD });
@@ -90,12 +83,19 @@ function buildMonthGrid(date: Date) {
   return cells;
 }
 
+function yyyyMmDd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 export default function Inside() {
   const [tab, setTab] = useState<"memories" | "notes" | "list" | "milestones">(
     "memories"
   );
 
-  // Memories (posts + photos)
+  // Memories
   const [posts, setPosts] = useState<Post[]>([]);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -106,7 +106,7 @@ export default function Inside() {
   const [noteTitle, setNoteTitle] = useState("");
   const [noteBody, setNoteBody] = useState("");
 
-  // Checklist
+  // Todos
   const [todos, setTodos] = useState<Todo[]>([]);
   const [todoText, setTodoText] = useState("");
 
@@ -115,16 +115,17 @@ export default function Inside() {
   const [taiNote, setTaiNote] = useState("");
   const [pinSaved, setPinSaved] = useState("");
 
-  // Calendar + Events
-  const [viewDate, setViewDate] = useState(() => new Date());
-  const [selectedDay, setSelectedDay] = useState<number>(() => new Date().getDate());
-  const [events, setEvents] = useState<CalEvent[]>([]);
+  // Events
+  const [monthCursor, setMonthCursor] = useState(() => new Date());
+  const [events, setEvents] = useState<EventRow[]>([]);
   const [eventTitle, setEventTitle] = useState("");
+  const [eventDate, setEventDate] = useState(yyyyMmDd(new Date()));
+  const [eventDetails, setEventDetails] = useState("");
 
   const [msg, setMsg] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // ✅ Put your real Spotify playlist link here
+  // Spotify
   const spotifyUrl =
     "https://open.spotify.com/playlist/3ytkKbz8DTVpWtod4RxzAF?si=aed292895d3842f0";
 
@@ -132,6 +133,7 @@ export default function Inside() {
     () => (file ? URL.createObjectURL(file) : null),
     [file]
   );
+
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -141,26 +143,23 @@ export default function Inside() {
   // Dates
   const metDate = useMemo(() => new Date(2025, 9, 5), []); // Oct 5, 2025
   const togetherDate = useMemo(() => new Date(2025, 10, 20), []); // Nov 20, 2025
-
   const today = new Date();
+
   const daysSinceMet = daysBetween(metDate, today);
   const daysTogether = daysBetween(togetherDate, today);
 
-  const monthCells = useMemo(() => buildMonthGrid(viewDate), [viewDate]);
-  const monthLabel = useMemo(
-    () =>
-      viewDate.toLocaleDateString(undefined, {
-        month: "long",
-        year: "numeric",
-      }),
-    [viewDate]
+  // Month grid for the cursor month
+  const monthCells = useMemo(
+    () => buildMonthGrid(monthCursor),
+    [monthCursor.getFullYear(), monthCursor.getMonth()]
   );
 
-  const selectedDate = useMemo(() => {
-    const d = new Date(viewDate.getFullYear(), viewDate.getMonth(), selectedDay);
-    return d;
-  }, [viewDate, selectedDay]);
+  const monthLabel = monthCursor.toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
 
+  // Helpers
   function getStoragePathFromPublicUrl(url: string) {
     const marker = "/storage/v1/object/public/photos/";
     const idx = url.indexOf(marker);
@@ -168,6 +167,7 @@ export default function Inside() {
     return url.slice(idx + marker.length);
   }
 
+  // Loads
   async function loadPosts() {
     const { data, error } = await supabase
       .from("posts")
@@ -213,29 +213,18 @@ export default function Inside() {
     setTaiNote(t?.body ?? "");
   }
 
-  async function loadEventsForMonth(date: Date) {
-    // events.event_date is DATE (YYYY-MM-DD)
-    const start = new Date(date.getFullYear(), date.getMonth(), 1);
-    const end = new Date(date.getFullYear(), date.getMonth() + 1, 1);
-
-    const startISO = toISODate(start);
-    const endISO = toISODate(end);
-
+  // ✅ next 5 upcoming events (any month)
+  async function loadNextEvents() {
+    const todayStr = yyyyMmDd(new Date());
     const { data, error } = await supabase
       .from("events")
       .select("*")
-      .gte("event_date", startISO)
-      .lt("event_date", endISO)
+      .gte("event_date", todayStr)
       .order("event_date", { ascending: true })
-      .order("created_at", { ascending: true });
+      .limit(5);
 
-    if (error) {
-      setMsg(error.message);
-      setEvents([]);
-      return;
-    }
-
-    setEvents((data as CalEvent[]) ?? []);
+    if (error) return setMsg(error.message);
+    setEvents((data as EventRow[]) ?? []);
   }
 
   useEffect(() => {
@@ -243,79 +232,11 @@ export default function Inside() {
     loadNotes();
     loadTodos();
     loadPinned();
-    loadEventsForMonth(new Date());
+    loadNextEvents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    // whenever we change month, load its events and keep selectedDay safe
-    const daysInThisMonth = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0).getDate();
-    if (selectedDay > daysInThisMonth) setSelectedDay(daysInThisMonth);
-    loadEventsForMonth(viewDate);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewDate]);
-
-  const selectedISO = useMemo(() => toISODate(selectedDate), [selectedDate]);
-
-  const eventsForSelectedDay = useMemo(() => {
-    return events.filter((e) => e.event_date === selectedISO);
-  }, [events, selectedISO]);
-
-  const hasEventOnDay = useMemo(() => {
-    const set = new Set(events.map((e) => e.event_date));
-    return (day: number) => {
-      const iso = `${viewDate.getFullYear()}-${pad2(viewDate.getMonth() + 1)}-${pad2(day)}`;
-      return set.has(iso);
-    };
-  }, [events, viewDate]);
-
-  function prevMonth() {
-    setViewDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
-  }
-  function nextMonth() {
-    setViewDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
-  }
-  function goToday() {
-    const t = new Date();
-    setViewDate(new Date(t.getFullYear(), t.getMonth(), 1));
-    setSelectedDay(t.getDate());
-  }
-
-  async function addEvent(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg("");
-
-    const t = eventTitle.trim();
-    if (!t) return;
-
-    const { error } = await supabase.from("events").insert({
-      title: t,
-      event_date: selectedISO,
-    });
-
-    if (error) return setMsg(error.message);
-
-    setEventTitle("");
-    await loadEventsForMonth(viewDate);
-  }
-
-  async function deleteEvent(ev: CalEvent) {
-    const ok = confirm("Delete this event?");
-    if (!ok) return;
-
-    setBusyId(ev.id);
-    setMsg("");
-
-    const { error } = await supabase.from("events").delete().eq("id", ev.id);
-    if (error) {
-      setBusyId(null);
-      return setMsg(error.message);
-    }
-
-    setBusyId(null);
-    await loadEventsForMonth(viewDate);
-  }
-
+  // Mutations
   async function addPost(e: React.FormEvent) {
     e.preventDefault();
     setMsg("");
@@ -468,7 +389,45 @@ export default function Inside() {
     setTimeout(() => setPinSaved(""), 1500);
   }
 
-  // Milestones based on togetherDate
+  async function addEvent(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg("");
+
+    if (!eventTitle.trim()) return setMsg("Event title is required.");
+
+    const { error } = await supabase.from("events").insert({
+      title: eventTitle.trim(),
+      event_date: eventDate,
+      details: eventDetails.trim() ? eventDetails.trim() : null,
+    });
+
+    if (error) return setMsg(error.message);
+
+    setEventTitle("");
+    setEventDetails("");
+    setMsg("Event saved.");
+    await loadNextEvents();
+  }
+
+  async function deleteEvent(ev: EventRow) {
+    const ok = confirm("Delete this event?");
+    if (!ok) return;
+
+    setMsg("");
+    setBusyId(ev.id);
+
+    const { error } = await supabase.from("events").delete().eq("id", ev.id);
+    if (error) {
+      setBusyId(null);
+      return setMsg(error.message);
+    }
+
+    setBusyId(null);
+    setMsg("Event deleted.");
+    await loadNextEvents();
+  }
+
+  // Milestones
   const milestones = useMemo(() => {
     const base = togetherDate;
     const mk = (label: string, d: Date) => ({
@@ -496,7 +455,7 @@ export default function Inside() {
 
   return (
     <main className={`${bodyFont.className} min-h-screen text-[#F8EDEB]`}>
-      {/* Background (keep your existing setup) */}
+      {/* Background (unchanged) */}
       <div className="fixed inset-0 bg-[#4E0707]" />
       <div
         className="fixed inset-0"
@@ -508,20 +467,19 @@ export default function Inside() {
           opacity: 0.35,
         }}
       />
-      {/* Dark overlay: increase / decrease to taste */}
-      <div className="fixed inset-0 bg-black/45" />
+      <div className="fixed inset-0 bg-black/40" />
 
-      <div className="relative px-6 py-10">
-        <div className="mx-auto max-w-5xl">
+      <div className="relative px-6 py-8">
+        <div className="mx-auto max-w-4xl">
           {/* Header */}
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className={`${fancy.className} text-6xl leading-none`}>
+              <h1 className={`${fancy.className} text-5xl leading-none`}>
                 Red Thread
               </h1>
-              <p className="mt-4 max-w-2xl opacity-85 leading-relaxed">
+              <p className="mt-3 max-w-2xl opacity-85 leading-relaxed text-sm">
                 We tried apps for couples and we always stopped using them. So I
-                decided to make this for us — a space we can build together. And
+                decided to make this for us - a space we can build together. And
                 also because you love keeping things organized.
               </p>
             </div>
@@ -534,227 +492,210 @@ export default function Inside() {
             </Link>
           </div>
 
-          {/* TOP: Two equal-size columns */}
-          <div className="mt-10 grid gap-6 md:grid-cols-2">
-            {/* LEFT: Calendar + Events */}
-            <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5 flex flex-col">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                    Calendar
-                  </div>
-                  <div className="mt-1 text-lg">{monthLabel}</div>
+          {/* TOP: two equal cards (smaller) */}
+          <div className="mt-7 grid gap-6 md:grid-cols-2">
+            {/* LEFT: calendar + events */}
+            <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
+                  Calendar
                 </div>
 
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={prevMonth}
-                    className="rounded-sm border border-[#F8EDEB]/35 px-3 py-2 text-xs uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
-                    aria-label="Previous month"
+                    onClick={() =>
+                      setMonthCursor(
+                        new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1)
+                      )
+                    }
+                    className="rounded-sm border border-[#F8EDEB]/30 px-2 py-1 text-[10px] uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
                   >
                     Prev
                   </button>
                   <button
-                    onClick={goToday}
-                    className="rounded-sm border border-[#F8EDEB]/35 px-3 py-2 text-xs uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
-                  >
-                    Today
-                  </button>
-                  <button
-                    onClick={nextMonth}
-                    className="rounded-sm border border-[#F8EDEB]/35 px-3 py-2 text-xs uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
-                    aria-label="Next month"
+                    onClick={() =>
+                      setMonthCursor(
+                        new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1)
+                      )
+                    }
+                    className="rounded-sm border border-[#F8EDEB]/30 px-2 py-1 text-[10px] uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
                   >
                     Next
                   </button>
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-7 gap-1.5 text-center text-xs opacity-90">
+              <div className="mt-2 text-sm opacity-90">{monthLabel}</div>
+              <div className="mt-1 text-xs opacity-75">{formatDateLong(today)}</div>
+
+              <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[10px] opacity-90">
                 {["M", "T", "W", "T", "F", "S", "S"].map((d, i) => (
-                  <div
-                    key={i}
-                    className="opacity-60 text-[10px] tracking-[0.2em]"
-                  >
+                  <div key={i} className="opacity-60 tracking-[0.2em]">
                     {d}
                   </div>
                 ))}
 
-                {monthCells.map((c, i) => {
-                  const isSelected = c.day === selectedDay;
-                  const showDot = c.day ? hasEventOnDay(c.day) : false;
-
-                  return (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => {
-                        if (!c.day) return;
-                        setSelectedDay(c.day);
-                      }}
-                      className={[
-                        "relative rounded-md border border-[#F8EDEB]/10 py-2 transition",
-                        c.day ? "cursor-pointer" : "cursor-default opacity-40",
-                        c.isToday ? "ring-1 ring-[#F8EDEB]/40" : "",
-                        isSelected
-                          ? "bg-[#F8EDEB] text-[#4E0707] border-[#F8EDEB]"
-                          : "bg-black/10 hover:bg-black/20",
-                      ].join(" ")}
-                    >
-                      <span className="text-xs">{c.day ?? ""}</span>
-
-                      {showDot && !isSelected && (
-                        <span className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-[#F8EDEB]/80" />
-                      )}
-                    </button>
-                  );
-                })}
+                {monthCells.map((c, i) => (
+                  <div
+                    key={i}
+                    className={`rounded-md py-1 border border-[#F8EDEB]/10 ${
+                      c.isToday ? "bg-[#F8EDEB] text-[#4E0707] border-[#F8EDEB]" : "bg-black/10"
+                    }`}
+                  >
+                    {c.day ?? ""}
+                  </div>
+                ))}
               </div>
 
-              {/* Events for selected day */}
-              <div className="mt-6 border-t border-[#F8EDEB]/12 pt-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.25em] opacity-75">
-                      Events
-                    </div>
-                    <div className="mt-1 text-sm opacity-85">
-                      {formatDateLong(selectedDate)}
-                    </div>
-                  </div>
+              {/* Events */}
+              <div className="mt-4 border-t border-[#F8EDEB]/12 pt-3">
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
+                  Next 5 events
                 </div>
 
-                <form onSubmit={addEvent} className="mt-3 flex gap-2">
-                  <input
-                    value={eventTitle}
-                    onChange={(e) => setEventTitle(e.target.value)}
-                    placeholder="Add an event…"
-                    className="flex-1 rounded-md border border-[#F8EDEB]/20 bg-transparent px-4 py-3 outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
-                  />
-                  <button
-                    type="submit"
-                    className="rounded-sm border border-[#F8EDEB]/35 px-4 py-2 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
-                  >
-                    Add
-                  </button>
-                </form>
-
                 <div className="mt-3 grid gap-2">
-                  {eventsForSelectedDay.map((ev) => (
+                  {events.map((ev) => (
                     <div
                       key={ev.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-[#F8EDEB]/15 bg-black/10 px-4 py-3"
+                      className="rounded-md border border-[#F8EDEB]/15 bg-black/10 px-3 py-2"
                     >
-                      <div className="text-sm">{ev.title}</div>
-                      <button
-                        onClick={() => deleteEvent(ev)}
-                        disabled={busyId === ev.id}
-                        className="rounded-sm border border-[#F8EDEB]/30 px-3 py-2 text-xs uppercase tracking-[0.22em] opacity-85 hover:bg-[#F8EDEB] hover:text-[#4E0707] transition disabled:opacity-40"
-                      >
-                        {busyId === ev.id ? "…" : "Remove"}
-                      </button>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm">{ev.title}</div>
+                          <div className="text-[11px] opacity-70">
+                            {new Date(ev.event_date).toLocaleDateString()}
+                            {ev.details ? ` • ${ev.details}` : ""}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => deleteEvent(ev)}
+                          disabled={busyId === ev.id}
+                          className="rounded-sm border border-[#F8EDEB]/30 px-2 py-1 text-[10px] uppercase tracking-[0.2em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition disabled:opacity-40"
+                        >
+                          {busyId === ev.id ? "..." : "Del"}
+                        </button>
+                      </div>
                     </div>
                   ))}
 
-                  {eventsForSelectedDay.length === 0 && (
-                    <div className="opacity-75 text-sm">
-                      No events for this day.
-                    </div>
+                  {events.length === 0 && (
+                    <div className="text-sm opacity-75">No upcoming events yet.</div>
                   )}
                 </div>
-              </div>
 
-              {/* keeps height similar */}
-              <div className="mt-auto" />
+                {/* Add event */}
+                <form onSubmit={addEvent} className="mt-3 grid gap-2">
+                  <input
+                    value={eventTitle}
+                    onChange={(e) => setEventTitle(e.target.value)}
+                    placeholder="Event title"
+                    className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="date"
+                      value={eventDate}
+                      onChange={(e) => setEventDate(e.target.value)}
+                      className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none focus:border-[#F8EDEB]/45"
+                    />
+                    <button
+                      type="submit"
+                      className="rounded-sm border border-[#F8EDEB]/35 px-4 py-2 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
+                    >
+                      Add
+                    </button>
+                  </div>
+                  <input
+                    value={eventDetails}
+                    onChange={(e) => setEventDetails(e.target.value)}
+                    placeholder="Details (optional)"
+                    className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
+                  />
+                </form>
+              </div>
             </section>
 
-            {/* RIGHT: Countdowns + Spotify + Pinned notes */}
-            <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-5 flex flex-col">
+            {/* RIGHT: countdown + pinned + spotify below */}
+            <section className="rounded-xl border border-[#F8EDEB]/18 bg-black/20 backdrop-blur-sm p-4">
               <div className="text-xs uppercase tracking-[0.25em] opacity-75">
                 Dashboard
               </div>
 
-              {/* Countdowns */}
-              <div className="mt-4 grid gap-3">
-                <div className="rounded-md border border-[#F8EDEB]/15 bg-black/10 px-4 py-3">
+              <div className="mt-3 grid gap-3">
+                <div className="rounded-md border border-[#F8EDEB]/15 bg-black/10 px-3 py-3">
                   <div className="text-xs uppercase tracking-[0.25em] opacity-75">
                     Days since we met
                   </div>
-                  <div className="mt-1 text-3xl font-semibold">
-                    {daysSinceMet}
-                  </div>
+                  <div className="mt-1 text-3xl font-semibold">{daysSinceMet}</div>
                   <div className="text-xs opacity-70">Since Oct 5, 2025</div>
                 </div>
 
-                <div className="rounded-md border border-[#F8EDEB]/15 bg-black/10 px-4 py-3">
+                <div className="rounded-md border border-[#F8EDEB]/15 bg-black/10 px-3 py-3">
                   <div className="text-xs uppercase tracking-[0.25em] opacity-75">
                     Days together
                   </div>
-                  <div className="mt-1 text-3xl font-semibold">
-                    {daysTogether}
-                  </div>
+                  <div className="mt-1 text-3xl font-semibold">{daysTogether}</div>
                   <div className="text-xs opacity-70">Since Nov 20, 2025</div>
                 </div>
               </div>
 
-              {/* Spotify */}
-              <a
-                href={spotifyUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-5 inline-flex w-full items-center justify-center rounded-sm border border-[#F8EDEB]/35 px-4 py-3 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
-              >
-                Open our Spotify playlist
-              </a>
-
               {/* Pinned notes */}
-              <div className="mt-6 text-xs uppercase tracking-[0.25em] opacity-75">
-                Pinned Notes
+              <div className="mt-4 border-t border-[#F8EDEB]/12 pt-3">
+                <div className="text-xs uppercase tracking-[0.25em] opacity-75">
+                  Pinned Notes
+                </div>
+
+                <form onSubmit={savePinned} className="mt-3 grid gap-3">
+                  <div>
+                    <div className="text-sm mb-1 opacity-80">Keya</div>
+                    <textarea
+                      value={keyaNote}
+                      onChange={(e) => setKeyaNote(e.target.value)}
+                      placeholder="Keya's pinned note…"
+                      rows={3}
+                      className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="text-sm mb-1 opacity-80">Tai</div>
+                    <textarea
+                      value={taiNote}
+                      onChange={(e) => setTaiNote(e.target.value)}
+                      placeholder="Tai's pinned note…"
+                      rows={3}
+                      className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="submit"
+                      className="rounded-sm border border-[#F8EDEB]/35 px-4 py-2 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
+                    >
+                      Save
+                    </button>
+
+                    {pinSaved && <span className="text-sm opacity-80">{pinSaved}</span>}
+                  </div>
+                </form>
+
+                {/* Spotify moved BELOW notes */}
+                <a
+                  href={spotifyUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-4 inline-flex w-full items-center justify-center rounded-sm border border-[#F8EDEB]/35 px-4 py-3 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
+                >
+                  Open our Spotify playlist
+                </a>
               </div>
-
-              <form onSubmit={savePinned} className="mt-4 grid gap-4">
-                <div>
-                  <div className="text-sm mb-2 opacity-80">Keya</div>
-                  <textarea
-                    value={keyaNote}
-                    onChange={(e) => setKeyaNote(e.target.value)}
-                    placeholder="Keya's pinned note…"
-                    rows={4}
-                    className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-4 py-3 outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
-                  />
-                </div>
-
-                <div>
-                  <div className="text-sm mb-2 opacity-80">Tai</div>
-                  <textarea
-                    value={taiNote}
-                    onChange={(e) => setTaiNote(e.target.value)}
-                    placeholder="Tai's pinned note…"
-                    rows={4}
-                    className="w-full rounded-md border border-[#F8EDEB]/20 bg-transparent px-4 py-3 outline-none placeholder:opacity-60 focus:border-[#F8EDEB]/45"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <button
-                    type="submit"
-                    className="rounded-sm border border-[#F8EDEB]/35 px-5 py-2 text-xs uppercase tracking-[0.25em] hover:bg-[#F8EDEB] hover:text-[#4E0707] transition"
-                  >
-                    Save Notes
-                  </button>
-
-                  {pinSaved && (
-                    <span className="text-sm opacity-80">{pinSaved}</span>
-                  )}
-                </div>
-              </form>
-
-              <div className="mt-auto" />
             </section>
           </div>
 
           {/* Tabs */}
-          <div className="mt-10 flex flex-wrap gap-2">
+          <div className="mt-8 flex flex-wrap gap-2">
             {[
               ["memories", "Memories"],
               ["notes", "Love Notes"],
@@ -850,9 +791,7 @@ export default function Inside() {
                           <div className="text-xs uppercase tracking-[0.25em] opacity-65">
                             {new Date(p.created_at).toLocaleString()}
                           </div>
-                          <div className="mt-2 text-2xl">
-                            {p.title ?? "Untitled"}
-                          </div>
+                          <div className="mt-2 text-2xl">{p.title ?? "Untitled"}</div>
                         </div>
 
                         <button
@@ -937,9 +876,7 @@ export default function Inside() {
                         <div className="text-xs uppercase tracking-[0.25em] opacity-65">
                           {new Date(n.created_at).toLocaleString()}
                         </div>
-                        <div className="mt-2 text-2xl">
-                          {n.title ?? "Love Note"}
-                        </div>
+                        <div className="mt-2 text-2xl">{n.title ?? "Love Note"}</div>
                       </div>
 
                       <button
